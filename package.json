@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-openclaw-weixin",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Weixin iLink nodes for n8n",
 	"license": "MIT",
 	"homepage": "https://github.com/ZHA30/n8n-nodes-openclaw-weixin",

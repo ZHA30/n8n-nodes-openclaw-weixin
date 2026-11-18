@@ -18,11 +18,16 @@ Bind a bot by QR code, receive direct messages, reply with text or media, and do
 
 ## Setup
 
-1. Build a local npm tarball with Node.js 24 using `npm ci`, `npm run build`, and `npm pack`, then install it in your self-hosted n8n instance.
-2. Start a test run of **Weixin Login Trigger**, open its **Test URL**, and confirm the QR login in Weixin.
-3. Create a **Weixin API** credential with the returned `botToken`, `botId`, and `baseUrl`.
-4. Activate **Weixin Trigger** and map the incoming `fromUserId` and `contextToken` into the **Weixin** reply operation.
-5. For **Download Attachment**, map `type`, either `url` or `query`, and `key` when the media is encrypted.
+Install `n8n-nodes-openclaw-weixin` from the Community Nodes settings in self-hosted n8n, or run the following command from the instance's community nodes directory.
+
+```sh
+npm install n8n-nodes-openclaw-weixin
+```
+
+1. Start a test run of **Weixin Login Trigger**, open its **Test URL**, and confirm the QR login in Weixin.
+2. Create a **Weixin API** credential with the returned `botToken`, `botId`, and `baseUrl`.
+3. Activate **Weixin Trigger** and map the incoming `fromUserId` and `contextToken` into the **Weixin** reply operation.
+4. For **Download Attachment**, map `type`, either `url` or `query`, and `key` when the media is encrypted.
 
 Media operations use the binary property `data` by default, with overrides under **Options**.
 
