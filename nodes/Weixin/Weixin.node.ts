@@ -10,7 +10,6 @@ import type {
 import { botRequest, credentialName, type Account } from '../shared/api';
 import { downloadMedia, uploadMedia, type Attachment } from '../shared/media';
 
-const sendOnly: INodeProperties['displayOptions'] = { hide: { operation: ['', 'download'] } };
 const downloadOnly: INodeProperties['displayOptions'] = { show: { operation: ['download'] } };
 
 const attachmentFields = ['type', 'url', 'query', 'key'] as const;
@@ -27,16 +26,34 @@ const binaryPropertyOption: INodeProperties = {
 	default: 'data',
 };
 
+const sendOptions: INodeProperties[] = [
+	{
+		displayName: 'contextToken',
+		name: 'contextToken',
+		type: 'string',
+		typeOptions: { password: true },
+		default: '',
+		description: 'Conversation context from a received message',
+	},
+	{
+		displayName: 'toUserId',
+		name: 'toUserId',
+		type: 'string',
+		default: '',
+		description: 'Recipient ID. Defaults to userId from the credential.',
+	},
+];
+
 export class Weixin implements INodeType {
 	description: INodeTypeDescription = {
 		icon: 'file:../../assets/icon.svg',
 		subtitle: '={{ $parameter.operation }}',
-		displayName: 'Weixin',
+		displayName: 'OpenClaw Weixin',
 		name: 'weixin',
 		group: ['output'],
 		version: 1,
 		description: 'Send Weixin messages and download attachments',
-		defaults: { name: 'Weixin' },
+		defaults: { name: 'OpenClaw Weixin' },
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
 		credentials: [{ name: credentialName, required: true }],
@@ -95,32 +112,23 @@ export class Weixin implements INodeType {
 				type: 'collection',
 				default: {},
 				placeholder: 'Add Option',
+				displayOptions: { show: { operation: ['text'] } },
+				options: sendOptions,
+			},
+			{
+				displayName: 'Options',
+				name: 'options',
+				type: 'collection',
+				default: {},
+				placeholder: 'Add Option',
 				displayOptions: { show: { operation: ['file', 'image', 'video'] } },
 				options: [
 					{
 						...binaryPropertyOption,
 						description: 'The input binary property containing the file to send. Defaults to data.',
 					},
+					...sendOptions,
 				],
-			},
-			{
-				displayName: 'fromUserId',
-				displayOptions: sendOnly,
-				name: 'recipient',
-				description: 'Map fromUserId from the incoming message to reply to its sender',
-				type: 'string',
-				default: '',
-				required: true,
-			},
-			{
-				displayName: 'contextToken',
-				displayOptions: sendOnly,
-				name: 'contextToken',
-				description: 'Map contextToken from the incoming message to reply in the same conversation',
-				type: 'string',
-				typeOptions: { password: true },
-				default: '',
-				required: true,
 			},
 			{
 				// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
@@ -154,27 +162,15 @@ export class Weixin implements INodeType {
 				const options = this.getNodeParameter('options', i, {}) as {
 					binaryProperty?: string;
 					fileName?: string;
+					toUserId?: string;
+					contextToken?: string;
 				};
-				const property =
-					options.binaryProperty?.trim() ||
-					(this.getNodeParameter('binaryProperty', i, '') as string).trim() ||
-					'data';
+				const property = options.binaryProperty?.trim() || 'data';
 				if (operation === 'download') {
-					const parameters = this.getNode().parameters;
-					const legacy =
-						parameters.attachment !== undefined &&
-						!attachmentFields.some((name) => parameters[name] !== undefined);
-					let attachment: Attachment;
-					if (legacy) {
-						const value = this.getNodeParameter('attachment', i);
-						attachment = (typeof value === 'string' ? JSON.parse(value) : value) as Attachment;
-					} else {
-						attachment = Object.fromEntries(
-							attachmentFields.map((name) => [name, this.getNodeParameter(name, i, '')]),
-						) as Attachment;
-						attachment.fileName =
-							options.fileName ?? (this.getNodeParameter('fileName', i, '') as string);
-					}
+					const attachment = Object.fromEntries(
+						attachmentFields.map((name) => [name, this.getNodeParameter(name, i, '')]),
+					) as Attachment;
+					attachment.fileName = options.fileName;
 					const { data, fileName } = await downloadMedia(attachment, signal);
 					const binary = await this.helpers.prepareBinaryData(
 						data,
@@ -188,15 +184,15 @@ export class Weixin implements INodeType {
 					});
 					continue;
 				}
-				const to = this.getNodeParameter('recipient', i) as string;
-				const context = this.getNodeParameter('contextToken', i) as string;
-				if (!to?.trim() || !context?.trim()) {
+				const to = options.toUserId?.trim() || account!.ownerUserId?.trim();
+				if (!to) {
 					throw new NodeOperationError(
 						this.getNode(),
-						'Recipient and context token are required.',
+						'Provide toUserId or set userId in the credential.',
 						{ itemIndex: i },
 					);
 				}
+				const context = options.contextToken?.trim();
 				let item;
 				if (operation === 'text') {
 					const text = this.getNodeParameter('text', i) as string;
@@ -223,7 +219,7 @@ export class Weixin implements INodeType {
 						msg: {
 							from_user_id: '',
 							to_user_id: to,
-							context_token: context,
+							context_token: context || undefined,
 							client_id: clientMessageId,
 							message_type: 2,
 							message_state: 2,

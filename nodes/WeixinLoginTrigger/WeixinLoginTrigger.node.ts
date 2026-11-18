@@ -68,12 +68,12 @@ export class WeixinLoginTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		icon: 'file:../../assets/icon.svg',
 		subtitle: 'QR binding',
-		displayName: 'Weixin Login Trigger',
+		displayName: 'OpenClaw Weixin Login Trigger',
 		name: 'weixinLoginTrigger',
 		group: ['trigger'],
 		version: 1,
 		description: 'Bind a Weixin account using a QR code',
-		defaults: { name: 'Weixin Login Trigger' },
+		defaults: { name: 'OpenClaw Weixin Login Trigger' },
 		inputs: [],
 		outputs: [NodeConnectionTypes.Main],
 		webhooks: [

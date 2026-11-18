@@ -1,35 +1,25 @@
 # n8n-nodes-openclaw-weixin
 
-Connect self-hosted n8n workflows to Weixin direct messages through the iLink Bot API used by OpenClaw.
+Connect self-hosted n8n workflows to Weixin direct messages through the OpenClaw iLink Bot API.
 
 > [!NOTE]
-> Run one active Weixin Trigger per bot on a single n8n main process with a persistent data directory.
+> Run each bot on a single n8n main process with persistent storage and use the same credential for its triggers.
 
 > [!WARNING]
-> Disable saving manual executions for the binding workflow because its output contains the bot token.
+> Disable saving manual executions for the login workflow because its output contains the bot token.
 
 ## Features
 
-Bind a bot by QR code, receive direct messages, reply with text or media, and download attachments.
+Install `n8n-nodes-openclaw-weixin` from n8n Community Nodes settings or with `npm install n8n-nodes-openclaw-weixin` in the community nodes directory.
 
-- **Weixin Login Trigger** displays a QR code at the test webhook URL and outputs the Weixin API credential fields after confirmation.
-- **Weixin Trigger** receives direct messages and attachment references while persisting the polling cursor across restarts.
-- **Weixin** replies with text, images, videos, or files and downloads received attachments as n8n binary data.
-
-## Setup
-
-Install `n8n-nodes-openclaw-weixin` from the Community Nodes settings in self-hosted n8n, or run the following command from the instance's community nodes directory.
-
-```sh
-npm install n8n-nodes-openclaw-weixin
-```
-
-1. Start a test run of **Weixin Login Trigger**, open its **Test URL**, and confirm the QR login in Weixin.
-2. Create a **Weixin API** credential with the returned `botToken`, `botId`, and `baseUrl`.
-3. Activate **Weixin Trigger** and map the incoming `fromUserId` and `contextToken` into the **Weixin** reply operation.
-4. For **Download Attachment**, map `type`, either `url` or `query`, and `key` when the media is encrypted.
-
-Media operations use the binary property `data` by default, with overrides under **Options**.
+- **OpenClaw Weixin Login Trigger** provides a QR login page at its test webhook URL and outputs the credential fields.
+- **Weixin API credential** stores the returned `botToken`, `botId`, `baseUrl`, and `userId` for messaging workflows.
+- **OpenClaw Weixin Trigger** receives all direct messages or filters text, commands, images, voice, video, and files.
+- **Commands** match text such as `/weather Shanghai` and output `command` as `weather` and `args` as `Shanghai`.
+- **OpenClaw Weixin** sends text, images, video, and files, and downloads received attachments to n8n binary data.
+- **Send options** allow `toUserId` and `contextToken` to be supplied, with the credential's `userId` used as the default recipient.
+- **Download Attachment** accepts the attachment `type`, `url` or `query`, and the `key` for encrypted media.
+- **Binary data** uses the property `data` by default and can be configured under **Options**.
 
 ## References
 

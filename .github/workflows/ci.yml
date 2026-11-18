@@ -32,3 +32,9 @@ jobs:
 
       - name: Run build
         run: 'npm run build'
+
+      - name: Run tests
+        run: node --test tests/*.test.cjs
+
+      - name: Check package
+        run: npm pack --dry-run --ignore-scripts
