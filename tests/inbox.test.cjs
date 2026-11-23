@@ -5,18 +5,19 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { WeixinTrigger } = require('../dist/nodes/WeixinTrigger/WeixinTrigger.node.js');
-const { parseCommand } = require('../dist/nodes/shared/inbox.js');
+const { WeixinChatTrigger } = require('../dist/nodes/WeixinChatTrigger/WeixinChatTrigger.node.js');
+const { dispatchReply, messageKey, parseCommand, registerReplyWaiter } = require('../dist/nodes/shared/inbox.js');
 
 const account = { botId: 'test-bot', botToken: 'test-token', ownerUserId: 'owner' };
 
-function context(event = 'all', command, manual = false, excludeCommands = false) {
+function context(command, manual = false) {
 	const output = [];
 	const errors = [];
 	return {
 		output,
 		errors,
 		getMode: () => (manual ? 'manual' : 'trigger'),
-		getNodeParameter: (name, fallback) => ({ event, command, excludeCommands })[name] ?? fallback,
+		getNodeParameter: (name, fallback) => ({ command, sessionMode: 'persistent', enableNewCommand: true, includeNewCommand: false })[name] ?? fallback,
 		getCredentials: async () => account,
 		getNode: () => ({ name: 'test', type: 'test', typeVersion: 1, position: [0, 0] }),
 		emit: (data) => output.push(data[0][0].json),
@@ -33,6 +34,9 @@ async function waitFor(check) {
 }
 
 test('shares polling and routes commands through trigger lifecycles', async () => {
+	const triggerProperties = new WeixinTrigger().description.properties;
+	assert.deepEqual(triggerProperties.map((property) => property.name), ['command']);
+	assert.equal(triggerProperties[0].required, true);
 	const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'weixin-inbox-test-'));
 	const originalFolder = process.env.N8N_USER_FOLDER;
 	const originalFetch = global.fetch;
@@ -54,25 +58,19 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 			args: '上海 浦东',
 		});
 		assert.equal(parseCommand('hello /weather'), undefined);
-		const all = context();
-		const weather = context('command', 'weather');
-		const todo = context('command', 'todo');
-		const manual = context('command', 'weather', true);
-		const manualAll = context('all', undefined, true);
-		const image = context('image');
-		const text = context('text', undefined, false, true);
+		const weather = context('weather');
+		const todo = context('todo');
+		const manual = context('weather', true);
+		const chat = context();
 		for (const [node, ctx] of [
-			[new WeixinTrigger(), all],
 			[new WeixinTrigger(), weather],
 			[new WeixinTrigger(), todo],
 			[new WeixinTrigger(), manual],
-			[new WeixinTrigger(), image],
-			[new WeixinTrigger(), text],
-			[new WeixinTrigger(), manualAll],
+			[new WeixinChatTrigger(), chat],
 		])
 			handles.push(await node.trigger.call(ctx));
 		await assert.rejects(
-			() => new WeixinTrigger().trigger.call(context('command', 'WEATHER')),
+			() => new WeixinTrigger().trigger.call(context('WEATHER')),
 			/already registered/,
 		);
 		await waitFor(() => pending);
@@ -104,17 +102,17 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 				},
 			],
 		});
-		await waitFor(() => all.output.length === 2 && pending);
+		await waitFor(() => weather.output.length === 1 && chat.output.length === 2 && pending);
 		assert.equal(weather.output.length, 1);
 		assert.equal(weather.output[0].args, '上海');
 		assert.equal(weather.output[0].contextToken, 'ctx');
 		assert.equal(manual.output.length, 1);
-		assert.equal(manualAll.output.length, 2);
-		assert.equal(image.output.length, 0);
-		assert.equal(text.output.length, 0);
 		assert.equal(todo.output[0].args, '买牛奶');
-		await handles[1].closeFunction();
-		await handles[3].closeFunction();
+		assert.equal(chat.output[0].chatInput, '/WEATHER 上海');
+		assert.equal(chat.output[0].sessionId, 'test-bot:owner:0');
+		assert.equal(chat.output[0].contextToken, 'ctx');
+		await handles[0].closeFunction();
+		await handles[2].closeFunction();
 		send = pending;
 		pending = undefined;
 		send({
@@ -131,7 +129,6 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 		});
 		await waitFor(() => todo.output.length === 2 && pending);
 		assert.equal(weather.output.length, 1);
-		assert.equal(all.output.length, 3);
 		send = pending;
 		pending = undefined;
 		send({
@@ -158,12 +155,12 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 				},
 			],
 		});
-		await waitFor(() => all.output.length === 6 && pending);
-		assert.equal(image.output.length, 1);
-		assert.equal(text.output.length, 1);
-		assert.equal(text.output[0].text, 'hello');
+		await waitFor(() => chat.output.length === 6 && pending);
+		assert.equal(weather.output.length, 1);
+		assert.equal(todo.output.length, 2);
+		assert.equal(manual.output.length, 1);
 		assert.equal(
-			all.errors.length + weather.errors.length + todo.errors.length + manual.errors.length,
+			weather.errors.length + todo.errors.length + manual.errors.length,
 			0,
 		);
 	} finally {
@@ -172,5 +169,22 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 		if (originalFolder === undefined) delete process.env.N8N_USER_FOLDER;
 		else process.env.N8N_USER_FOLDER = originalFolder;
 		fs.rmSync(folder, { recursive: true, force: true });
+	}
+});
+
+test('uses item message IDs for deduplication and dispatches waiters in registration order', async () => {
+	assert.deepEqual(parseCommand('/new'), { command: 'new', args: '' });
+	assert.equal(messageKey({ from_user_id: 'user', item_list: [{ msg_id: 'item-1' }] }), '["user","item-1"]');
+	const calls = [];
+	const releaseFirst = registerReplyWaiter('fifo-bot', 'user', async (message) => calls.push(`first:${message.text}`));
+	const releaseSecond = registerReplyWaiter('fifo-bot', 'user', async (message) => calls.push(`second:${message.text}`));
+	try {
+		assert.equal(await dispatchReply('fifo-bot', 'user', { text: 'one' }), true);
+		assert.equal(await dispatchReply('fifo-bot', 'user', { text: 'two' }), true);
+		assert.equal(await dispatchReply('fifo-bot', 'user', { text: 'three' }), false);
+		assert.deepEqual(calls, ['first:one', 'second:two']);
+	} finally {
+		releaseFirst();
+		releaseSecond();
 	}
 });

@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import type { IDataObject } from 'n8n-workflow';
+import type { IDataObject, IBinaryData } from 'n8n-workflow';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { botRequest, WeixinError, type Account } from './api';
 import { attachment, type MessageItem } from './media';
+import { downloadMedia } from './media';
 
 interface Message {
 	message_id?: string;
@@ -20,16 +21,64 @@ interface Inbox {
 	cursor: string;
 	pending: Message[];
 	recent: string[];
+	contextTokens: Record<string, string>;
+	generations: Record<string, number>;
 }
 type Output = IDataObject;
 export type EventType = 'all' | 'text' | 'command' | 'image' | 'voice' | 'file' | 'video';
+export type ChatMode = 'persistent' | 'perMessage';
+const contextTokens = new Map<string, string>();
+const replyWaiters = new Map<string, Set<(message: Output) => Promise<void>>>();
+export function getCachedContextToken(botId: string, userId: string): string | undefined {
+	return contextTokens.get(`${botId}:${userId}`);
+}
+
+export async function getLatestContextToken(botId: string, userId: string): Promise<string | undefined> {
+	const cached = getCachedContextToken(botId, userId);
+	if (cached) return cached;
+	try {
+		const inbox = JSON.parse(await readFile(inboxPath(botId), 'utf8')) as Partial<Inbox>;
+		const token = inbox.contextTokens?.[userId];
+		if (token) contextTokens.set(`${botId}:${userId}`, token);
+		return token;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+		throw error;
+	}
+}
+export function registerReplyWaiter(
+	botId: string,
+	userId: string,
+	callback: (message: Output) => Promise<void>,
+): () => void {
+	const key = `${botId}:${userId}`;
+	const waiters = replyWaiters.get(key) ?? new Set();
+	waiters.add(callback);
+	replyWaiters.set(key, waiters);
+	return () => {
+		waiters.delete(callback);
+		if (!waiters.size) replyWaiters.delete(key);
+	};
+}
+export async function dispatchReply(botId: string, userId: string, message: Output): Promise<boolean> {
+	const key = `${botId}:${userId}`;
+	const waiters = replyWaiters.get(key);
+	if (!waiters?.size) return false;
+	const [waiter] = waiters;
+	await waiter!(message);
+	waiters.delete(waiter!);
+	if (!waiters.size) replyWaiters.delete(key);
+	return true;
+}
 type Subscriber = {
 	event: EventType;
 	excludeCommands?: boolean;
 	command?: string;
 	manual: boolean;
-	emit: (message: Output) => void;
+	emit: (message: Output, binary?: Record<string, IBinaryData>) => void;
+	prepareBinary?: (data: Buffer, fileName?: string, mimeType?: string) => Promise<IBinaryData>;
 	error: (error: unknown) => void;
+	chat?: { mode: ChatMode; newCommand: string; includeNewCommand: boolean };
 };
 type Receiver = {
 	account: Account;
@@ -39,9 +88,10 @@ type Receiver = {
 };
 const receivers = new Map<string, Receiver>();
 
-function messageKey(message: Message) {
-	return message.message_id
-		? JSON.stringify([message.from_user_id, message.message_id])
+export function messageKey(message: Message) {
+	const id = message.message_id ?? message.item_list?.find((item) => item.msg_id)?.msg_id;
+	return id
+		? JSON.stringify([message.from_user_id, id])
 		: undefined;
 }
 
@@ -61,6 +111,7 @@ function inboxPath(botId: string) {
 
 async function run(receiver: Receiver, botId: string) {
 	const { account, controller, subscribers } = receiver;
+	const ownerUserId = account.ownerUserId.trim();
 	const signal = controller.signal;
 	const directory = join(process.env.N8N_USER_FOLDER || homedir(), '.n8n', 'weixin');
 	const file = inboxPath(botId);
@@ -70,8 +121,12 @@ async function run(receiver: Receiver, botId: string) {
 		inbox = JSON.parse(await readFile(file, 'utf8')) as Inbox;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-		inbox = { cursor: '', pending: [], recent: [] };
+		inbox = { cursor: '', pending: [], recent: [], contextTokens: {}, generations: {} };
 	}
+	inbox.contextTokens ??= {};
+	inbox.generations ??= {};
+	for (const [userId, token] of Object.entries(inbox.contextTokens))
+		contextTokens.set(`${botId}:${userId}`, token);
 	const save = async () => {
 		await writeFile(file + '.tmp', JSON.stringify(inbox), { mode: 0o600 });
 		await rename(file + '.tmp', file);
@@ -79,10 +134,8 @@ async function run(receiver: Receiver, botId: string) {
 	let timeout = 35_000;
 	while (!signal.aborted) {
 		while (inbox.pending.length && !signal.aborted) {
-			const message = inbox.pending.shift()!;
+			const message = inbox.pending[0];
 			const id = messageKey(message);
-			if (id) inbox.recent = [...inbox.recent, id].slice(-1024);
-			await save();
 			const text = (message.item_list ?? [])
 				.map((item) => item.text_item?.text ?? item.voice_item?.text)
 				.filter(Boolean)
@@ -112,7 +165,21 @@ async function run(receiver: Receiver, botId: string) {
 						}
 					: {}),
 			};
+			if (message.context_token && message.from_user_id)
+				contextTokens.set(`${botId}:${message.from_user_id}`, message.context_token);
+			if (message.context_token && message.from_user_id) {
+				inbox.contextTokens[message.from_user_id] = message.context_token;
+				await save();
+			}
+			if (message.from_user_id) await dispatchReply(botId, message.from_user_id, output);
 			const itemTypes = new Set((message.item_list ?? []).map((item) => item.type));
+			const chatSubscribers = [...subscribers].filter((subscriber) => subscriber.chat);
+			const downloadedAttachments = new Map<number, { data: Buffer; fileName?: string }>();
+			const newChatCommand = chatSubscribers
+				.map((subscriber) => subscriber.chat!.newCommand.trim().replace(/^\//, '').toLowerCase())
+				.find((command) => command && parsed?.command === command);
+			if (newChatCommand && message.from_user_id)
+				inbox.generations[message.from_user_id] = (inbox.generations[message.from_user_id] ?? 0) + 1;
 			const typeNumbers: Partial<Record<EventType, number>> = {
 				text: 1,
 				image: 2,
@@ -121,7 +188,36 @@ async function run(receiver: Receiver, botId: string) {
 				video: 5,
 			};
 			for (const subscriber of subscribers) {
-				if (subscriber.event === 'command') {
+				if (subscriber.chat) {
+					const userId = message.from_user_id!;
+					const key = `${botId}:${userId}`;
+					if (newChatCommand && parsed?.command === newChatCommand && !subscriber.chat.includeNewCommand) continue;
+					const generation = inbox.generations[userId] ?? 0;
+					const binary: Record<string, IBinaryData> = {};
+					for (let index = 0; index < attachments.length; index++) {
+						const media = attachments[index];
+						if (!media || !subscriber.prepareBinary) continue;
+						let downloaded = downloadedAttachments.get(index);
+						if (!downloaded) {
+							downloaded = await downloadMedia(media, signal);
+							downloadedAttachments.set(index, downloaded);
+						}
+						binary[`attachment_${index + 1}`] = await subscriber.prepareBinary(
+							downloaded.data,
+							downloaded.fileName,
+							media.type === 'voice' ? 'audio/silk' : media.type === 'image' ? 'image/jpeg' : undefined,
+						);
+					}
+					await save();
+					subscriber.emit({
+						...output,
+						chatInput: text,
+						sessionId:
+							subscriber.chat.mode === 'perMessage'
+								? `${key}:${message.message_id ?? Date.now()}`
+								: `${key}:${generation}`,
+					}, binary);
+				} else if (subscriber.event === 'command') {
 					if (subscriber.command === parsed?.command) subscriber.emit({ ...output, ...parsed });
 				} else if (
 					subscriber.event === 'all' ||
@@ -131,6 +227,9 @@ async function run(receiver: Receiver, botId: string) {
 					subscriber.emit(output);
 				}
 			}
+			inbox.pending.shift();
+			if (id) inbox.recent = [...inbox.recent, id].slice(-1024);
+			await save();
 		}
 		let response: { get_updates_buf?: string; msgs?: Message[]; longpolling_timeout_ms?: number };
 		try {
@@ -150,11 +249,11 @@ async function run(receiver: Receiver, botId: string) {
 		if (signal.aborted) return;
 		if (response.longpolling_timeout_ms && response.longpolling_timeout_ms > 0)
 			timeout = response.longpolling_timeout_ms;
-		const known = new Set(inbox.recent);
+		const known = new Set([...inbox.recent, ...inbox.pending.map(messageKey).filter((id): id is string => !!id)]);
 		const cursor = response.get_updates_buf || inbox.cursor;
 		for (const message of response.msgs ?? []) {
 			if (message.group_id || message.message_type !== 1 || !message.from_user_id) continue;
-			if (account.ownerUserId && account.ownerUserId !== message.from_user_id) continue;
+			if (ownerUserId !== message.from_user_id) continue;
 			const id = messageKey(message);
 			if (id && known.has(id)) continue;
 			if (id) known.add(id);
@@ -173,6 +272,7 @@ export async function subscribe(
 ): Promise<() => Promise<void>> {
 	const botId = account.botId.trim();
 	if (!botId) throw new Error('Bot ID is required.');
+	if (!account.ownerUserId?.trim()) throw new Error('userId is required in the Weixin credential.');
 	let receiver = receivers.get(botId);
 	if (receiver?.controller.signal.aborted) {
 		await receiver.task;

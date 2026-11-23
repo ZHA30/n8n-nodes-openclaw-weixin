@@ -124,7 +124,7 @@ export class WeixinLoginTrigger implements INodeType {
 				if (result.status === 'confirmed') {
 					sessions.delete(key);
 					previous.controller.abort();
-					if (!result.bot_token || !result.ilink_bot_id) {
+					if (!result.bot_token || !result.ilink_bot_id || !result.ilink_user_id) {
 						res.json({ status: 'ended' });
 						return handled;
 					}

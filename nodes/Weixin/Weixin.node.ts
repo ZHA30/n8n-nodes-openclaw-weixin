@@ -7,7 +7,8 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { botRequest, credentialName, type Account } from '../shared/api';
+import { credentialName, sendMessageItem, sendTextMessage, type Account } from '../shared/api';
+import { getLatestContextToken } from '../shared/inbox';
 import { downloadMedia, uploadMedia, type Attachment } from '../shared/media';
 
 const downloadOnly: INodeProperties['displayOptions'] = { show: { operation: ['download'] } };
@@ -25,24 +26,6 @@ const binaryPropertyOption: INodeProperties = {
 	type: 'string',
 	default: 'data',
 };
-
-const sendOptions: INodeProperties[] = [
-	{
-		displayName: 'contextToken',
-		name: 'contextToken',
-		type: 'string',
-		typeOptions: { password: true },
-		default: '',
-		description: 'Conversation context from a received message',
-	},
-	{
-		displayName: 'toUserId',
-		name: 'toUserId',
-		type: 'string',
-		default: '',
-		description: 'Recipient ID. Defaults to userId from the credential.',
-	},
-];
 
 export class Weixin implements INodeType {
 	description: INodeTypeDescription = {
@@ -112,22 +95,12 @@ export class Weixin implements INodeType {
 				type: 'collection',
 				default: {},
 				placeholder: 'Add Option',
-				displayOptions: { show: { operation: ['text'] } },
-				options: sendOptions,
-			},
-			{
-				displayName: 'Options',
-				name: 'options',
-				type: 'collection',
-				default: {},
-				placeholder: 'Add Option',
 				displayOptions: { show: { operation: ['file', 'image', 'video'] } },
 				options: [
 					{
 						...binaryPropertyOption,
 						description: 'The input binary property containing the file to send. Defaults to data.',
 					},
-					...sendOptions,
 				],
 			},
 			{
@@ -162,8 +135,6 @@ export class Weixin implements INodeType {
 				const options = this.getNodeParameter('options', i, {}) as {
 					binaryProperty?: string;
 					fileName?: string;
-					toUserId?: string;
-					contextToken?: string;
 				};
 				const property = options.binaryProperty?.trim() || 'data';
 				if (operation === 'download') {
@@ -184,15 +155,16 @@ export class Weixin implements INodeType {
 					});
 					continue;
 				}
-				const to = options.toUserId?.trim() || account!.ownerUserId?.trim();
-				if (!to) {
+				const boundUserId = account!.ownerUserId?.trim();
+				if (!boundUserId) {
 					throw new NodeOperationError(
 						this.getNode(),
-						'Provide toUserId or set userId in the credential.',
+						'userId is required in the Weixin credential.',
 						{ itemIndex: i },
 					);
 				}
-				const context = options.contextToken?.trim();
+				const to = boundUserId;
+				const context = await getLatestContextToken(account!.botId, to);
 				let item;
 				if (operation === 'text') {
 					const text = this.getNodeParameter('text', i) as string;
@@ -212,22 +184,9 @@ export class Weixin implements INodeType {
 					);
 				}
 				const clientMessageId = randomUUID();
-				const result = await botRequest<{ message_id?: string }>(
-					account!,
-					'sendmessage',
-					{
-						msg: {
-							from_user_id: '',
-							to_user_id: to,
-							context_token: context || undefined,
-							client_id: clientMessageId,
-							message_type: 2,
-							message_state: 2,
-							item_list: [item],
-						},
-					},
-					signal,
-				);
+				const result = operation === 'text'
+					? await sendTextMessage(account!, to, this.getNodeParameter('text', i) as string, context, signal, clientMessageId)
+					: await sendMessageItem(account!, to, item, context, signal, clientMessageId);
 				output.push({ json: { clientMessageId, messageId: result.message_id }, pairedItem });
 			} catch (error) {
 				const failure = new NodeOperationError(

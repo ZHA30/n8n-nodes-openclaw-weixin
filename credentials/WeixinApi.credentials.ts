@@ -21,6 +21,6 @@ export class WeixinApi implements ICredentialType {
 			type: 'string',
 			default: '',
 		},
-		{ displayName: 'userId', name: 'ownerUserId', type: 'string', default: '' },
+		{ displayName: 'userId', name: 'ownerUserId', type: 'string', default: '', required: true, description: 'The only Weixin user this credential may receive messages from or send messages to.' },
 	];
 }

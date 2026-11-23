@@ -20,7 +20,8 @@
 		"build:watch": "tsc --watch",
 		"dev": "n8n-node dev",
 		"lint": "n8n-node lint",
-		"lint:fix": "n8n-node lint --fix"
+		"lint:fix": "n8n-node lint --fix",
+		"test": "npm run build && node --test tests/*.test.cjs"
 	},
 	"files": [
 		"dist",
@@ -33,6 +34,8 @@
 			"dist/credentials/WeixinApi.credentials.js"
 		],
 		"nodes": [
+			"dist/nodes/WeixinChatTrigger/WeixinChatTrigger.node.js",
+			"dist/nodes/WeixinChat/WeixinChat.node.js",
 			"dist/nodes/Weixin/Weixin.node.js",
 			"dist/nodes/WeixinTrigger/WeixinTrigger.node.js",
 			"dist/nodes/WeixinLoginTrigger/WeixinLoginTrigger.node.js"

@@ -11,6 +11,7 @@ interface MediaItem {
 	media?: Media;
 }
 export interface MessageItem {
+	msg_id?: string;
 	type?: number;
 	text_item?: { text?: string };
 	image_item?: MediaItem & { aeskey?: string };
@@ -151,6 +152,6 @@ export async function downloadMedia(item: Attachment, signal?: AbortSignal) {
 	return {
 		data: decipher ? Buffer.concat([decipher.update(buffer), decipher.final()]) : buffer,
 		fileName:
-			item.fileName || { video: 'video.mp4', voice: 'voice.silk' }[item.type as 'video' | 'voice'],
+			item.fileName || { image: 'image.jpg', video: 'video.mp4', voice: 'voice.silk' }[item.type as 'image' | 'video' | 'voice'],
 	};
 }

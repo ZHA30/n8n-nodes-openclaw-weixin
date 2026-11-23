@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { parse, isLosslessNumber } from 'lossless-json';
 
 export const baseUrl = 'https://ilinkai.weixin.qq.com';
@@ -8,7 +8,7 @@ export interface Account {
 	baseUrl?: string;
 	botToken: string;
 	botId: string;
-	ownerUserId?: string;
+	ownerUserId: string;
 }
 
 export class WeixinError extends Error {
@@ -87,4 +87,45 @@ export function botRequest<T>(
 		signal,
 		timeout,
 	});
+}
+
+export type OutboundMessageItem = {
+	type: number;
+	text_item?: object;
+	image_item?: object;
+	video_item?: object;
+	file_item?: object;
+};
+
+export async function sendMessageItem(
+	account: Account,
+	toUserId: string,
+	item: OutboundMessageItem,
+	contextToken?: string,
+	signal?: AbortSignal,
+	clientId = randomUUID(),
+) {
+	return await botRequest<{ message_id?: string }>(account, 'sendmessage', {
+		msg: {
+			from_user_id: '', to_user_id: toUserId, context_token: contextToken || undefined,
+			client_id: clientId, message_type: 2, message_state: 2, item_list: [item],
+		},
+	}, signal);
+}
+
+export async function sendTextMessage(
+	account: Account,
+	toUserId: string,
+	text: string,
+	contextToken?: string,
+	signal?: AbortSignal,
+	clientId = randomUUID(),
+) {
+	return await botRequest<{ message_id?: string }>(account, 'sendmessage', {
+		msg: {
+			from_user_id: '', to_user_id: toUserId, context_token: contextToken || undefined,
+			client_id: clientId, message_type: 2, message_state: 2,
+			item_list: [{ type: 1, text_item: { text } }],
+		},
+	}, signal);
 }
