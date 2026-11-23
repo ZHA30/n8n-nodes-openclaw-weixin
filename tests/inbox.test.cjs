@@ -43,8 +43,13 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 	process.env.N8N_USER_FOLDER = folder;
 	let pending;
 	let calls = 0;
-	global.fetch = async (_url, options) => {
+	const sent = [];
+	global.fetch = async (url, options) => {
 		calls++;
+		if (String(url).includes('sendmessage')) {
+			sent.push(JSON.parse(options.body).msg.item_list[0].text_item.text);
+			return { ok: true, text: async () => '{"ret":0}' };
+		}
 		const response = await new Promise((resolve, reject) => {
 			pending = resolve;
 			options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
@@ -61,14 +66,19 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 		const weather = context('weather');
 		const todo = context('todo');
 		const manual = context('weather', true);
-		const chat = context();
+		const chat = context('reading');
+		const cooking = context('cooking');
+		assert.equal(new WeixinChatTrigger().description.properties[0].required, true);
 		for (const [node, ctx] of [
 			[new WeixinTrigger(), weather],
 			[new WeixinTrigger(), todo],
 			[new WeixinTrigger(), manual],
 			[new WeixinChatTrigger(), chat],
+			[new WeixinChatTrigger(), cooking],
 		])
 			handles.push(await node.trigger.call(ctx));
+		await assert.rejects(() => new WeixinChatTrigger().trigger.call(context('READING')), /already registered/);
+		await assert.rejects(() => new WeixinChatTrigger().trigger.call(context('weather')), /already registered/);
 		await assert.rejects(
 			() => new WeixinTrigger().trigger.call(context('WEATHER')),
 			/already registered/,
@@ -82,11 +92,26 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 			get_updates_buf: 'cursor1',
 			msgs: [
 				{
+					message_id: '0', from_user_id: 'owner', message_type: 1, context_token: 'ctx',
+					item_list: [{ type: 1, text_item: { text: 'before selecting' } }],
+				},
+				{
+					message_id: '0a', from_user_id: 'owner', message_type: 1, context_token: 'ctx',
+					item_list: [{ type: 1, text_item: { text: '/unknown' } }],
+				},
+				{
 					message_id: '1',
 					from_user_id: 'owner',
 					message_type: 1,
 					context_token: 'ctx',
-					item_list: [{ type: 1, text_item: { text: '/WEATHER 上海' } }],
+					item_list: [{ type: 1, text_item: { text: '/reading' } }],
+				},
+				{
+					message_id: '1a',
+					from_user_id: 'owner',
+					message_type: 1,
+					context_token: 'ctx',
+					item_list: [{ type: 1, text_item: { text: '/weather 上海' } }],
 				},
 				{
 					message_id: '2',
@@ -102,15 +127,15 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 				},
 			],
 		});
-		await waitFor(() => weather.output.length === 1 && chat.output.length === 2 && pending);
+		await waitFor(() => weather.output.length === 1 && sent.length >= 3 && pending);
 		assert.equal(weather.output.length, 1);
 		assert.equal(weather.output[0].args, '上海');
 		assert.equal(weather.output[0].contextToken, 'ctx');
 		assert.equal(manual.output.length, 1);
 		assert.equal(todo.output[0].args, '买牛奶');
-		assert.equal(chat.output[0].chatInput, '/WEATHER 上海');
-		assert.equal(chat.output[0].sessionId, 'test-bot:owner:0');
-		assert.equal(chat.output[0].contextToken, 'ctx');
+		assert.equal(sent[0], '/cooking\n/reading');
+		assert.ok(sent.includes('/reading'));
+		assert.equal(chat.output.length, 0);
 		await handles[0].closeFunction();
 		await handles[2].closeFunction();
 		send = pending;
@@ -155,7 +180,31 @@ test('shares polling and routes commands through trigger lifecycles', async () =
 				},
 			],
 		});
-		await waitFor(() => chat.output.length === 6 && pending);
+		await waitFor(() => chat.output.length === 3 && pending);
+		assert.equal(chat.output[1].chatInput, 'hello');
+		assert.equal(chat.output[1].sessionId, 'test-bot:owner:reading:0');
+		assert.equal(cooking.output.length, 0);
+		send = pending;
+		pending = undefined;
+		send({
+			ret: 0,
+			get_updates_buf: 'cursor4',
+			msgs: [
+				{ message_id: '8', from_user_id: 'owner', message_type: 1, context_token: 'ctx', item_list: [{ type: 1, text_item: { text: '/cooking' } }] },
+				{ message_id: '9', from_user_id: 'owner', message_type: 1, item_list: [{ type: 1, text_item: { text: 'food' } }] },
+				{ message_id: '10', from_user_id: 'owner', message_type: 1, context_token: 'ctx', item_list: [{ type: 1, text_item: { text: '/reading' } }] },
+				{ message_id: '11', from_user_id: 'owner', message_type: 1, item_list: [{ type: 1, text_item: { text: 'book' } }] },
+				{ message_id: '12', from_user_id: 'owner', message_type: 1, context_token: 'ctx', item_list: [{ type: 1, text_item: { text: '/new' } }] },
+				{ message_id: '13', from_user_id: 'owner', message_type: 1, item_list: [{ type: 1, text_item: { text: 'new book' } }] },
+			],
+		});
+		await waitFor(() => chat.output.length >= 5 && sent.length >= 5);
+		assert.equal(cooking.output[0].chatInput, 'food');
+		assert.equal(cooking.output[0].sessionId, 'test-bot:owner:cooking:0');
+		assert.equal(chat.output[3].chatInput, 'book');
+		assert.equal(chat.output[3].sessionId, 'test-bot:owner:reading:0');
+		assert.equal(chat.output[4].sessionId, 'test-bot:owner:reading:1');
+		assert.deepEqual(sent.slice(-3), ['/cooking', '/reading', '/reading']);
 		assert.equal(weather.output.length, 1);
 		assert.equal(todo.output.length, 2);
 		assert.equal(manual.output.length, 1);

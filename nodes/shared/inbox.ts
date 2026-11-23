@@ -23,6 +23,7 @@ interface Inbox {
 	recent: string[];
 	contextTokens: Record<string, string>;
 	generations: Record<string, number>;
+	activeCommands: Record<string, string>;
 }
 type Output = IDataObject;
 export type EventType = 'all' | 'text' | 'command' | 'image' | 'voice' | 'file' | 'video';
@@ -78,7 +79,8 @@ type Subscriber = {
 	emit: (message: Output, binary?: Record<string, IBinaryData>) => void;
 	prepareBinary?: (data: Buffer, fileName?: string, mimeType?: string) => Promise<IBinaryData>;
 	error: (error: unknown) => void;
-	chat?: { mode: ChatMode; newCommand: string; includeNewCommand: boolean };
+	chat?: { command: string; mode: ChatMode; newCommand: string };
+	reply?: (text: string, contextToken: string) => Promise<void>;
 };
 type Receiver = {
 	account: Account;
@@ -121,10 +123,11 @@ async function run(receiver: Receiver, botId: string) {
 		inbox = JSON.parse(await readFile(file, 'utf8')) as Inbox;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-		inbox = { cursor: '', pending: [], recent: [], contextTokens: {}, generations: {} };
+		inbox = { cursor: '', pending: [], recent: [], contextTokens: {}, generations: {}, activeCommands: {} };
 	}
 	inbox.contextTokens ??= {};
 	inbox.generations ??= {};
+	inbox.activeCommands ??= {};
 	for (const [userId, token] of Object.entries(inbox.contextTokens))
 		contextTokens.set(`${botId}:${userId}`, token);
 	const save = async () => {
@@ -175,11 +178,40 @@ async function run(receiver: Receiver, botId: string) {
 			const itemTypes = new Set((message.item_list ?? []).map((item) => item.type));
 			const chatSubscribers = [...subscribers].filter((subscriber) => subscriber.chat);
 			const downloadedAttachments = new Map<number, { data: Buffer; fileName?: string }>();
-			const newChatCommand = chatSubscribers
-				.map((subscriber) => subscriber.chat!.newCommand.trim().replace(/^\//, '').toLowerCase())
-				.find((command) => command && parsed?.command === command);
-			if (newChatCommand && message.from_user_id)
-				inbox.generations[message.from_user_id] = (inbox.generations[message.from_user_id] ?? 0) + 1;
+			const userId = message.from_user_id!;
+			const chatCommand = chatSubscribers.find((subscriber) => subscriber.chat!.command === parsed?.command);
+			const newCommand = chatSubscribers.some((subscriber) => subscriber.chat!.newCommand && parsed?.command === subscriber.chat!.newCommand.replace(/^\//, '').toLowerCase());
+			const ordinaryCommand = parsed && [...subscribers].some((subscriber) => !subscriber.chat && subscriber.command === parsed.command);
+			const availableCommands = chatSubscribers.map((subscriber) => `/${subscriber.chat!.command}`).sort();
+			const commandList = availableCommands.join('\n');
+			const replyingSubscriber = chatSubscribers.find((subscriber) => subscriber.reply);
+			const replyContextToken = message.context_token || inbox.contextTokens[userId];
+			const reply = async (subscriber: Subscriber | undefined, text: string) => {
+				if (!subscriber?.reply || !replyContextToken) return;
+				try {
+					await subscriber.reply(text, replyContextToken);
+				} catch (error) {
+					subscriber.error(error);
+				}
+			};
+			if (parsed && chatCommand) {
+				inbox.activeCommands[userId] = chatCommand.chat!.command;
+				await save();
+				await reply(chatCommand, `/${chatCommand.chat!.command}`);
+			} else if (parsed && newCommand) {
+				const activeCommand = inbox.activeCommands[userId];
+				if (activeCommand) {
+					const key = `${userId}:${activeCommand}`;
+					inbox.generations[key] = (inbox.generations[key] ?? 0) + 1;
+					await save();
+				}
+				await reply(replyingSubscriber, activeCommand ? `/${activeCommand}` : commandList);
+			} else if (parsed && !ordinaryCommand) {
+				await reply(replyingSubscriber, commandList);
+			} else if (!parsed && (!inbox.activeCommands[userId] || !chatSubscribers.some((subscriber) => subscriber.chat!.command === inbox.activeCommands[userId]))) {
+				delete inbox.activeCommands[userId];
+				await reply(replyingSubscriber, commandList);
+			}
 			const typeNumbers: Partial<Record<EventType, number>> = {
 				text: 1,
 				image: 2,
@@ -189,10 +221,9 @@ async function run(receiver: Receiver, botId: string) {
 			};
 			for (const subscriber of subscribers) {
 				if (subscriber.chat) {
-					const userId = message.from_user_id!;
 					const key = `${botId}:${userId}`;
-					if (newChatCommand && parsed?.command === newChatCommand && !subscriber.chat.includeNewCommand) continue;
-					const generation = inbox.generations[userId] ?? 0;
+					if (parsed || inbox.activeCommands[userId] !== subscriber.chat.command) continue;
+					const generation = inbox.generations[`${userId}:${subscriber.chat.command}`] ?? 0;
 					const binary: Record<string, IBinaryData> = {};
 					for (let index = 0; index < attachments.length; index++) {
 						const media = attachments[index];
@@ -214,8 +245,8 @@ async function run(receiver: Receiver, botId: string) {
 						chatInput: text,
 						sessionId:
 							subscriber.chat.mode === 'perMessage'
-								? `${key}:${message.message_id ?? Date.now()}`
-								: `${key}:${generation}`,
+								? `${key}:${subscriber.chat.command}:${message.message_id ?? Date.now()}`
+								: `${key}:${subscriber.chat.command}:${generation}`,
 					}, binary);
 				} else if (subscriber.event === 'command') {
 					if (subscriber.command === parsed?.command) subscriber.emit({ ...output, ...parsed });
