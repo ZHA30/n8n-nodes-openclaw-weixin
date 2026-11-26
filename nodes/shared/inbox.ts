@@ -58,7 +58,7 @@ export function registerReplyWaiter(
 	replyWaiters.set(key, waiters);
 	return () => {
 		waiters.delete(callback);
-		if (!waiters.size) replyWaiters.delete(key);
+		if (!waiters.size && replyWaiters.get(key) === waiters) replyWaiters.delete(key);
 	};
 }
 export async function dispatchReply(botId: string, userId: string, message: Output): Promise<boolean> {
@@ -68,7 +68,7 @@ export async function dispatchReply(botId: string, userId: string, message: Outp
 	const [waiter] = waiters;
 	await waiter!(message);
 	waiters.delete(waiter!);
-	if (!waiters.size) replyWaiters.delete(key);
+	if (!waiters.size && replyWaiters.get(key) === waiters) replyWaiters.delete(key);
 	return true;
 }
 type Subscriber = {

@@ -45,33 +45,48 @@ export class WeixinChat implements INodeType {
 			if (!toUserId) throw new NodeOperationError(this.getNode(), 'No Weixin recipient is available.', { itemIndex: i });
 			if (!text.trim()) throw new NodeOperationError(this.getNode(), 'Message is required.', { itemIndex: i });
 			if (!contextToken) throw new NodeOperationError(this.getNode(), 'No Weixin context token is available for this user. Ensure the Chat Trigger received a message with a context token and shares its n8n user folder with this execution.', { itemIndex: i });
+			const binaryEntry = Object.entries(input[i].binary ?? {})[0];
+			const mime = binaryEntry?.[1].mimeType?.toLowerCase() ?? '';
+			if (binaryEntry && mime !== 'application/pdf' && !mime.startsWith('image/'))
+				throw new NodeOperationError(this.getNode(), 'Chat can send only image or PDF binary output. Use the Weixin node for other media.', { itemIndex: i });
 			let unregister: (() => void) | undefined;
+			let expiration: ReturnType<typeof setTimeout> | undefined;
 			if (operation === 'sendAndWait') {
 				const resumeUrl = this.getWorkflowDataProxy(i).$execution.resumeUrl;
-				unregister = registerReplyWaiter(account.botId, toUserId, async (message) => {
+				const removeWaiter = registerReplyWaiter(account.botId, toUserId, async (message) => {
 					const response = await fetch(resumeUrl, {
 						method: 'POST',
 						headers: { 'content-type': 'application/json' },
 						body: JSON.stringify({ data: message }),
 					});
 					if (!response.ok) throw new NodeOperationError(this.getNode(), `Weixin Chat wait resume failed (${response.status}).`);
+					clearTimeout(expiration);
 				});
-				this.onExecutionFinish?.(() => unregister?.());
+				unregister = () => {
+					clearTimeout(expiration);
+					removeWaiter();
+				};
+				this.onExecutionFinish?.(unregister);
 			}
 			let response: { message_id?: string };
 			try {
 				const signal = this.getExecutionCancelSignal();
+				const buffer = binaryEntry
+					? await this.helpers.getBinaryDataBuffer(i, binaryEntry[0])
+					: undefined;
 				response = await sendTextMessage(account, toUserId, text, contextToken, signal);
-				const binaryEntries = Object.entries(input[i].binary ?? {});
-				if (binaryEntries.length > 0) {
-					const [property, binary] = binaryEntries[0];
-					const mime = binary.mimeType?.toLowerCase() ?? '';
-					if (mime !== 'application/pdf' && !mime.startsWith('image/'))
-						throw new NodeOperationError(this.getNode(), 'Chat can send only image or PDF binary output. Use the Weixin node for other media.', { itemIndex: i });
+				if (binaryEntry && buffer) {
+					const [, binary] = binaryEntry;
 					const mediaType = mime === 'application/pdf' ? 'file' : 'image';
-					const buffer = await this.helpers.getBinaryDataBuffer(i, property);
 					const item = await uploadMedia(account, mediaType, toUserId, buffer, binary.fileName || (mediaType === 'image' ? 'image.jpg' : 'document.pdf'), signal);
 					await sendMessageItem(account, toUserId, item, contextToken, signal);
+				}
+				if (unregister) {
+					const timeout = this.getNodeParameter('waitTimeout', i, 60) as number;
+					const waitUntil = new Date(Date.now() + timeout * 60 * 1000);
+					expiration = setTimeout(unregister, Math.max(0, waitUntil.getTime() - Date.now()));
+					expiration.unref();
+					await this.putExecutionToWait(waitUntil);
 				}
 			} catch (error) {
 				unregister?.();
@@ -80,10 +95,6 @@ export class WeixinChat implements INodeType {
 					: new NodeOperationError(this.getNode(), error instanceof Error ? error.message : String(error));
 			}
 			result.push({ json: { ...json, sent: true, messageId: response.message_id }, pairedItem: { item: i } });
-			if (operation === 'sendAndWait') {
-				const timeout = this.getNodeParameter('waitTimeout', i, 60) as number;
-				await this.putExecutionToWait(new Date(Date.now() + timeout * 60 * 1000));
-			}
 		}
 		return [result];
 	}

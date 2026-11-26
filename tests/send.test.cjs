@@ -155,3 +155,51 @@ test('Send and Wait rejects multiple items rather than registering ambiguous wai
 	};
 	await assert.rejects(() => new WeixinChat().execute.call(context), /one input item per execution/);
 });
+
+test('Weixin Chat rejects an unsupported attachment before sending text', async (t) => {
+	const fetch = t.mock.method(globalThis, 'fetch', async () => ({
+		ok: true,
+		text: async () => '{"ret":0}',
+	}));
+	const context = {
+		getInputData: () => [{
+			json: { fromUserId: 'owner', contextToken: 'context' },
+			binary: { attachment: { mimeType: 'audio/mpeg' } },
+		}],
+		getNodeParameter: (name, _index, fallback) => name === 'text' ? 'answer' : fallback,
+		getCredentials: async () => ({ botId: 'bot', botToken: 'token', ownerUserId: 'owner' }),
+		getExecutionCancelSignal: () => undefined,
+		getNode: () => ({ name: 'Weixin Chat', type: 'weixinChat', typeVersion: 1, position: [0, 0] }),
+	};
+	await assert.rejects(() => new WeixinChat().execute.call(context), /only image or PDF/);
+	assert.equal(fetch.mock.callCount(), 0);
+});
+
+test('an expired Chat wait leaves the next reply available to a newer execution', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+	const resumeUrls = [];
+	t.mock.method(globalThis, 'fetch', async (url) => {
+		if (typeof url === 'string') resumeUrls.push(url);
+		return { ok: true, text: async () => '{"ret":0}' };
+	});
+	const botId = 'expiring-wait-bot';
+	const userId = 'owner';
+	const chat = new WeixinChat();
+	function context(resumeUrl) {
+		return {
+			getInputData: () => [{ json: { fromUserId: userId, contextToken: 'ctx' } }],
+			getNodeParameter: (name, _index, fallback) =>
+				({ text: 'question', operation: 'sendAndWait', waitTimeout: 1 })[name] ?? fallback,
+			getCredentials: async () => ({ botId, botToken: 'token', ownerUserId: userId }),
+			getExecutionCancelSignal: () => undefined,
+			getWorkflowDataProxy: () => ({ $execution: { resumeUrl } }),
+			getNode: () => ({ name: 'Weixin Chat' }),
+			putExecutionToWait: async () => {},
+		};
+	}
+	await chat.execute.call(context('https://n8n.test/expired'));
+	t.mock.timers.tick(60_000);
+	await chat.execute.call(context('https://n8n.test/current'));
+	assert.equal(await dispatchReply(botId, userId, { text: 'reply' }), true);
+	assert.deepEqual(resumeUrls, ['https://n8n.test/current']);
+});
