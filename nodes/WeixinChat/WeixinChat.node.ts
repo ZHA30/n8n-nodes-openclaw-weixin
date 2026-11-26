@@ -8,14 +8,14 @@ import { getLatestContextToken, registerReplyWaiter } from '../shared/inbox';
 export class WeixinChat implements INodeType {
 	description: INodeTypeDescription = {
 		usableAsTool: true, icon: 'file:../../assets/icon.svg', displayName: 'OpenClaw Weixin Chat', name: 'weixinChat',
-		group: ['output'], version: 1, description: 'Send a message to the current Weixin chat. Send and Wait resumes the first pending wait for this user; avoid concurrent waits for the same user.',
-		subtitle: 'Send message',
+		group: ['output'], version: 1, description: 'Reply to the current Weixin conversation, optionally pausing for the next message',
+		subtitle: '={{ $parameter.operation === "sendAndWait" ? "Wait for reply" : "Send reply" }}',
 		defaults: { name: 'OpenClaw Weixin Chat' }, inputs: [NodeConnectionTypes.Main], outputs: [NodeConnectionTypes.Main],
 		credentials: [{ name: credentialName, required: true }],
 		webhooks: [{ name: 'default', httpMethod: 'POST', responseMode: 'onReceived', responseData: '', path: '={{ $nodeId }}', restartWebhook: true, isFullPath: true }],
 		properties: [
 			{ displayName: 'Operation', name: 'operation', type: 'options', noDataExpression: true, default: 'send', options: [{ name: 'Send Message', value: 'send' }, { name: 'Send and Wait for Response', value: 'sendAndWait' }] },
-			{ displayName: 'Wait Timeout (Minutes)', name: 'waitTimeout', type: 'number', typeOptions: { minValue: 1, maxValue: 10080 }, default: 60, displayOptions: { show: { operation: ['sendAndWait'] } } },
+			{ displayName: 'Wait Timeout (Minutes)', name: 'waitTimeout', type: 'number', typeOptions: { minValue: 1, maxValue: 10080 }, default: 60, description: 'How long to wait for the bound user to reply. The next reply resumes the oldest pending wait.', displayOptions: { show: { operation: ['sendAndWait'] } } },
 			{ displayName: 'Message', name: 'text', type: 'string', typeOptions: { rows: 4 }, default: '', required: true },
 		],
 	};

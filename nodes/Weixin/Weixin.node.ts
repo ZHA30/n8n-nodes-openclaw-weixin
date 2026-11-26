@@ -14,6 +14,12 @@ import { downloadMedia, uploadMedia, type Attachment } from '../shared/media';
 const downloadOnly: INodeProperties['displayOptions'] = { show: { operation: ['download'] } };
 
 const attachmentFields = ['type', 'url', 'query', 'key'] as const;
+const attachmentLabels = {
+	type: 'Attachment Type',
+	url: 'Download URL',
+	query: 'Encrypted Download Parameter',
+	key: 'Decryption Key',
+};
 const attachmentDescriptions = {
 	type: 'The attachment type from the trigger. Use image, video, voice, or file.',
 	url: 'The full download URL from the attachment. Leave empty to use query.',
@@ -21,7 +27,7 @@ const attachmentDescriptions = {
 	key: 'The decryption key from the attachment. Required for encrypted media.',
 };
 const binaryPropertyOption: INodeProperties = {
-	displayName: 'binaryProperty',
+	displayName: 'Binary Field',
 	name: 'binaryProperty',
 	type: 'string',
 	default: 'data',
@@ -39,7 +45,7 @@ export class Weixin implements INodeType {
 		defaults: { name: 'OpenClaw Weixin' },
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
-		credentials: [{ name: credentialName, required: true }],
+		credentials: [{ name: credentialName, required: true, displayOptions: { show: { operation: ['text', 'file', 'image', 'video'] } } }],
 		properties: [
 			{
 				displayName: 'Operation',
@@ -58,7 +64,7 @@ export class Weixin implements INodeType {
 			},
 			...attachmentFields.map(
 				(name): INodeProperties => ({
-					displayName: name,
+					displayName: attachmentLabels[name],
 					description: attachmentDescriptions[name],
 					name,
 					type: 'string',
@@ -81,7 +87,7 @@ export class Weixin implements INodeType {
 						description: 'The output binary property for the downloaded file. Defaults to data.',
 					},
 					{
-						displayName: 'fileName',
+						displayName: 'File Name',
 						name: 'fileName',
 						type: 'string',
 						default: '',
@@ -104,8 +110,7 @@ export class Weixin implements INodeType {
 				],
 			},
 			{
-				// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
-				displayName: 'text',
+				displayName: 'Message',
 				displayOptions: { show: { operation: ['text'] } },
 				name: 'text',
 				description: 'The message text to send',
