@@ -36,6 +36,10 @@ export async function request<T>(
 	} = {},
 ): Promise<T> {
 	const url = new URL('/ilink/bot/' + operation, host);
+	if (options.token && (url.protocol !== 'https:' || url.port || url.username || url.password ||
+		!url.hostname.endsWith('.weixin.qq.com'))) {
+		throw new Error('Weixin Bot API requires an HTTPS address under weixin.qq.com.');
+	}
 	if (options.query) url.search = options.query.toString();
 	const headers: Record<string, string> = {
 		'iLink-App-Id': 'bot',
@@ -69,7 +73,7 @@ export async function request<T>(
 		if (!isLosslessNumber(value)) return value;
 		return key === 'message_id' || key === 'msg_id' ? value.toString() : Number(value.toString());
 	}) as T & { ret?: number; errcode?: number };
-	const code = result.errcode || result.ret;
+	const code = result.errcode === -14 || result.ret === -14 ? -14 : result.errcode || result.ret;
 	if (code) throw new WeixinError(code, operation);
 	return result;
 }

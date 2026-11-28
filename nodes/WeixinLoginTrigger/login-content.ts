@@ -47,8 +47,8 @@ export function loginContent(id: string, image: string) {
 					expired: 'The QR code expired.',
 					verify_code_blocked: 'PIN attempts exceeded. Request a new QR code.',
 					failed: 'Could not connect to Weixin.',
-					binded_redirect: 'This account is already bound.',
-					confirmed: 'Account bound. Return to the n8n editor to view the credentials.',
+					binded_redirect: 'This account is already bound. Use the existing credential or disconnect the previous binding before trying again.',
+					confirmed: 'Scan confirmed. Return to the n8n editor and copy the output into a Weixin API credential.',
 					ended: 'The test session ended. Restart the listener in n8n.'
 				};
 				async function check(action, code) {

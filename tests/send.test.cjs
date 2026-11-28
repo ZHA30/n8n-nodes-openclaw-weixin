@@ -109,13 +109,18 @@ test('Send and Wait registers before sending and resumes with inbox message data
 	const oldFetch = global.fetch;
 	const events = [];
 	let resumePayload;
+	let resumeAttempts = 0;
+	let delivery;
 	global.fetch = async (url, options) => {
 		if (url === 'https://n8n.test/resume') {
+			assert.deepEqual(events, ['wait']);
+			if (++resumeAttempts === 1) throw new Error('Temporary network failure');
+			if (resumeAttempts === 2) return { ok: false, status: 409 };
 			resumePayload = JSON.parse(options.body);
 			return { ok: true, status: 200 };
 		}
 		// Simulate an immediate reply arriving during the send request.
-		await dispatchReply('wait-bot', 'user-wait', { messageId: 'reply', text: 'done' });
+		delivery = dispatchReply('wait-bot', 'user-wait', { messageId: 'reply', text: 'done' });
 		return { ok: true, text: async () => '{"ret":0,"message_id":"sent"}' };
 	};
 	let finish;
@@ -133,6 +138,8 @@ test('Send and Wait registers before sending and resumes with inbox message data
 	try {
 		await new WeixinChat().execute.call(context);
 		assert.ok(waitUntil instanceof Date);
+		assert.equal(await delivery, true);
+		assert.equal(resumeAttempts, 3);
 		assert.deepEqual(resumePayload.data, { messageId: 'reply', text: 'done' });
 		assert.equal(await dispatchReply('wait-bot', 'user-wait', { text: 'again' }), false);
 		finish();
@@ -202,4 +209,48 @@ test('an expired Chat wait leaves the next reply available to a newer execution'
 	await chat.execute.call(context('https://n8n.test/current'));
 	assert.equal(await dispatchReply(botId, userId, { text: 'reply' }), true);
 	assert.deepEqual(resumeUrls, ['https://n8n.test/current']);
+});
+
+test('Chat uses the linked Weixin event after Agent output and rejects a different bot', async (t) => {
+	const requests = [];
+	t.mock.method(globalThis, 'fetch', async (_url, options) => {
+		requests.push(JSON.parse(options.body));
+		return { ok: true, text: async () => '{"ret":0}' };
+	});
+	const event = { botId: 'my-bot', fromUserId: 'owner', contextToken: 'original-context' };
+	const context = {
+		getInputData: () => [{ json: { output: 'answer from Agent' } }],
+		getNodeParameter: (name, _index, fallback) =>
+			({ text: 'answer from Agent', replyTo: event })[name] ?? fallback,
+		getCredentials: async () => ({ botId: 'my-bot', botToken: 'token', ownerUserId: 'owner' }),
+		getExecutionCancelSignal: () => undefined,
+		getNode: () => ({ name: 'Weixin Chat' }),
+	};
+	const chat = new WeixinChat();
+	await chat.execute.call(context);
+	assert.equal(requests[0].msg.context_token, 'original-context');
+	assert.equal(requests[0].msg.item_list[0].text_item.text, 'answer from Agent');
+	event.botId = 'other-bot';
+	await assert.rejects(() => chat.execute.call(context), /Bot ID must match/);
+	assert.equal(requests.length, 1);
+});
+
+test('attachment mapping preserves the filename and requires no Bot credential', async (t) => {
+	t.mock.method(globalThis, 'fetch', async () => new Response(Buffer.from('image')));
+	const attachment = { type: 'image', url: 'https://novac2c.cdn.weixin.qq.com/c2c/download', fileName: 'photo.png' };
+	const output = await new Weixin().execute.call({
+		getNode: () => ({ name: 'Weixin' }),
+		getInputData: () => [{ json: { attachments: [attachment] } }],
+		getExecutionCancelSignal: () => undefined,
+		getNodeParameter: (name, _index, fallback) => ({ operation: 'download', attachment })[name] ?? fallback,
+		helpers: { prepareBinaryData: async (_data, fileName) => ({ fileName }) },
+	});
+	assert.equal(output[0][0].binary.data.fileName, 'photo.png');
+});
+
+test('an unrecognized Bot API host is rejected before sending a token', async (t) => {
+	const { botRequest } = require('../dist/nodes/shared/api.js');
+	const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected request'); });
+	await assert.rejects(() => botRequest({ baseUrl: 'https://example.com', botToken: 'token' }, 'sendmessage', {}), /requires an HTTPS address under weixin.qq.com/);
+	assert.equal(fetch.mock.callCount(), 0);
 });

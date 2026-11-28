@@ -11,8 +11,8 @@ import { subscribe } from '../shared/inbox';
 export class WeixinTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		icon: 'file:../../assets/icon.svg',
-		subtitle: 'Direct message',
-		displayName: 'OpenClaw Weixin Trigger',
+		subtitle: '={{ "/" + $parameter.command.replace(/^\\//, "") }}',
+		displayName: 'OpenClaw Weixin Command Trigger',
 		name: 'weixinTrigger',
 		group: ['trigger'],
 		version: 1,
@@ -28,17 +28,17 @@ export class WeixinTrigger implements INodeType {
 				type: 'string',
 				default: '',
 				required: true,
-				description: 'Command to match without the leading slash',
+				description: 'Command to match, with or without the leading slash',
 			},
 		],
 	};
 
 	async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
-		const command = (this.getNodeParameter('command', '') as string).trim().toLowerCase();
-		if (!/^[a-z0-9_-]+$/.test(command)) {
+		const command = (this.getNodeParameter('command', '') as string).trim().replace(/^\//, '').toLowerCase();
+		if (!/^[a-z0-9_-]+$/.test(command) || command === 'new') {
 			throw new NodeOperationError(
 				this.getNode(),
-				'Command must contain only letters, numbers, underscores, or hyphens.',
+				'Command must contain only letters, numbers, underscores, or hyphens, and cannot be "new".',
 			);
 		}
 		const account = await this.getCredentials<Account>(credentialName);
@@ -48,6 +48,11 @@ export class WeixinTrigger implements INodeType {
 				command,
 				manual: this.getMode() === 'manual',
 				emit: (json) => this.emit([[{ json }]]),
+				messageError: (error) => {
+					const failure = new NodeOperationError(this.getNode(), error instanceof Error ? error.message : String(error));
+					if (this.getMode() !== 'manual' && this.saveFailedExecution) this.saveFailedExecution(failure);
+					else this.logger.warn(failure.message);
+				},
 				error: (error) =>
 					this.emitError(
 						new NodeOperationError(this.getNode(), error instanceof Error ? error : String(error)),

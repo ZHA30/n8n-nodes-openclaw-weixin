@@ -62,6 +62,14 @@ export class Weixin implements INodeType {
 					{ name: 'Send Video', value: 'video', action: 'Send a video' },
 				],
 			},
+			{
+				displayName: 'Attachment',
+				name: 'attachment',
+				type: 'json',
+				default: '',
+				description: 'Map one attachment object from the Trigger output',
+				displayOptions: downloadOnly,
+			},
 			...attachmentFields.map(
 				(name): INodeProperties => ({
 					displayName: attachmentLabels[name],
@@ -69,7 +77,7 @@ export class Weixin implements INodeType {
 					name,
 					type: 'string',
 					default: '',
-					required: name === 'type',
+
 					displayOptions: downloadOnly,
 					...(name === 'key' ? { typeOptions: { password: true } } : {}),
 				}),
@@ -143,10 +151,22 @@ export class Weixin implements INodeType {
 				};
 				const property = options.binaryProperty?.trim() || 'data';
 				if (operation === 'download') {
-					const attachment = Object.fromEntries(
+					const attachmentInput: unknown = this.getNodeParameter('attachment', i, '');
+					let attachment: Attachment;
+					if (attachmentInput) {
+						let value: unknown;
+						try {
+							value = typeof attachmentInput === 'string' ? JSON.parse(attachmentInput) : attachmentInput;
+						} catch {
+							throw new NodeOperationError(this.getNode(), 'Attachment must contain valid JSON.', { itemIndex: i });
+						}
+						if (!value || typeof value !== 'object' || Array.isArray(value))
+							throw new NodeOperationError(this.getNode(), 'Attachment must be a Weixin attachment object.', { itemIndex: i });
+						attachment = { ...value } as Attachment;
+					} else attachment = Object.fromEntries(
 						attachmentFields.map((name) => [name, this.getNodeParameter(name, i, '')]),
 					) as Attachment;
-					attachment.fileName = options.fileName;
+					attachment.fileName = options.fileName || attachment.fileName;
 					const { data, fileName } = await downloadMedia(attachment, signal);
 					const binary = await this.helpers.prepareBinaryData(
 						data,
@@ -169,29 +189,23 @@ export class Weixin implements INodeType {
 					);
 				}
 				const to = boundUserId;
-				const context = await getLatestContextToken(account!.botId, to);
-				let item;
+				const event = input[i].json;
+				const eventContext = event.botId === account!.botId.trim() && event.fromUserId === to &&
+					typeof event.contextToken === 'string' ? event.contextToken : undefined;
+				const context = eventContext || await getLatestContextToken(account!.botId, to);
+				const clientMessageId = randomUUID();
+				let result;
 				if (operation === 'text') {
 					const text = this.getNodeParameter('text', i) as string;
 					if (!text?.trim())
 						throw new NodeOperationError(this.getNode(), 'Text is required.', { itemIndex: i });
-					item = { type: 1, text_item: { text } };
+					result = await sendTextMessage(account!, to, text, context, signal, clientMessageId);
 				} else {
 					const binary = this.helpers.assertBinaryData(i, property);
 					const buffer = await this.helpers.getBinaryDataBuffer(i, property);
-					item = await uploadMedia(
-						account!,
-						operation,
-						to,
-						buffer,
-						binary.fileName || 'attachment.bin',
-						signal,
-					);
+					const item = await uploadMedia(account!, operation, to, buffer, binary.fileName || 'attachment.bin', signal);
+					result = await sendMessageItem(account!, to, item, context, signal, clientMessageId);
 				}
-				const clientMessageId = randomUUID();
-				const result = operation === 'text'
-					? await sendTextMessage(account!, to, this.getNodeParameter('text', i) as string, context, signal, clientMessageId)
-					: await sendMessageItem(account!, to, item, context, signal, clientMessageId);
 				output.push({ json: { clientMessageId, messageId: result.message_id }, pairedItem });
 			} catch (error) {
 				const failure = new NodeOperationError(

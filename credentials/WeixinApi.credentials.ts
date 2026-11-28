@@ -7,20 +7,20 @@ export class WeixinApi implements ICredentialType {
 	documentationUrl = 'https://github.com/ZHA30/n8n-nodes-openclaw-weixin';
 	properties: INodeProperties[] = [
 		{
-			displayName: 'botToken',
+			displayName: 'Bot Token',
 			name: 'botToken',
 			type: 'string',
 			typeOptions: { password: true },
 			default: '',
 			required: true,
 		},
-		{ displayName: 'botId', name: 'botId', type: 'string', default: '', required: true },
+		{ displayName: 'Bot ID', name: 'botId', type: 'string', default: '', required: true },
 		{
-			displayName: 'baseUrl',
+			displayName: 'API Base URL',
 			name: 'baseUrl',
 			type: 'string',
 			default: '',
 		},
-		{ displayName: 'userId', name: 'ownerUserId', type: 'string', default: '', required: true, description: 'The only Weixin user this credential may receive messages from or send messages to.' },
+		{ displayName: 'Bound User ID', name: 'ownerUserId', type: 'string', default: '', required: true, description: 'Copy userId from the account binding output. This is the only user the credential can receive from or send to.' },
 	];
 }
